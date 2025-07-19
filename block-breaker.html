@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ブロック崩しゲーム</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            background-color: #222;
+            font-family: Arial, sans-serif;
+        }
+        
+        .game-container {
+            text-align: center;
+        }
+        
+        canvas {
+            border: 2px solid #fff;
+            background-color: #000;
+        }
+        
+        .controls {
+            margin-top: 20px;
+            color: #fff;
+        }
+        
+        .score {
+            color: #fff;
+            font-size: 20px;
+            margin-bottom: 10px;
+        }
+        
+        .game-over {
+            color: #ff4444;
+            font-size: 24px;
+            margin-top: 10px;
+        }
+        
+        .restart-btn {
+            background-color: #4CAF50;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            margin-top: 10px;
+        }
+        
+        .restart-btn:hover {
+            background-color: #45a049;
+        }
+    </style>
+</head>
+<body>
+    <div class="game-container">
+        <div class="score">スコア: <span id="score">0</span></div>
+        <canvas id="gameCanvas" width="800" height="600"></canvas>
+        <div class="controls">
+            左右の矢印キーでパドルを操作してください
+        </div>
+        <div id="gameOver" class="game-over" style="display: none;">
+            ゲームオーバー！
+            <br>
+            <button class="restart-btn" onclick="restartGame()">もう一度プレイ</button>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const scoreElement = document.getElementById('score');
+        const gameOverElement = document.getElementById('gameOver');
+
+        let score = 0;
+        let gameRunning = true;
+
+        // 効果音の設定
+        const sounds = {
+            blockBreak: new Audio('data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACBhYqFbF1fdJivrJBhNjVgodDbq2EcBj+a2/LDciUFLIHO8tiJNwgZaLvt559NEAxQp+PwtmMcBzid4/LFd'),
+            paddleHit: new Audio('data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACBhYqFbF1fdJivrJBhNjVgodDbq2EcBj+a2/LDciUFLIHO8tiJNwgZaLvt559NEAxQp+PwtmMcBzid4/LFdyQELYDM8d'),
+            powerUp: new Audio('data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACBhYqFbF1fdJivrJBhNjVgodDbq2EcBj+a2/LDciUFLIHO8tiJNwgZaLvt559NEAxQp+PwtmMcBzid4/LFd')
+        };
+
+        // より良い効果音を生成する関数
+        function createBeepSound(frequency, duration, type = 'sine') {
+            const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            const oscillator = audioContext.createOscillator();
+            const gainNode = audioContext.createGain();
+            
+            oscillator.connect(gainNode);
+            gainNode.connect(audioContext.destination);
+            
+            oscillator.frequency.value = frequency;
+            oscillator.type = type;
+            
+            gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
+            gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + duration);
+            
+            oscillator.start(audioContext.currentTime);
+            oscillator.stop(audioContext.currentTime + duration);
+        }
+
+        function playBlockBreakSound() {
+            createBeepSound(800, 0.2, 'square');
+        }
+
+        function playPaddleHitSound() {
+            createBeepSound(400, 0.1, 'sine');
+        }
+
+        function playPowerUpSound() {
+            // 上昇音階の効果音
+            createBeepSound(523, 0.1); // C
+            setTimeout(() => createBeepSound(659, 0.1), 100); // E
+            setTimeout(() => createBeepSound(784, 0.1), 200); // G
+        }
+
+        // パワーアップアイテムの配列とシステム
+        const powerUps = [];
+        const powerUpTypes = {
+            BIGGER_BALL: { color: '#ff6b35', effect: 'biggerBall', duration: 10000 },
+            LONGER_PADDLE: { color: '#4ecdc4', effect: 'longerPaddle', duration: 8000 },
+            FASTER_BALL: { color: '#ffe66d', effect: 'fasterBall', duration: 6000 }
+        };
+        
+        let activePowerUps = {
+            biggerBall: { active: false, endTime: 0 },
+            longerPaddle: { active: false, endTime: 0 },
+            fasterBall: { active: false, endTime: 0 }
+        };
+        
+        // 元の値を保存
+        const originalBallRadius = 8;
+        const originalPaddleWidth = 100;
+        const originalBallSpeed = { dx: 4, dy: 4 };
+
+        const paddle = {
+            x: canvas.width / 2 - 50,
+            y: canvas.height - 30,
+            width: 100,
+            height: 10,
+            speed: 8
+        };
+
+        const ball = {
+            x: canvas.width / 2,
+            y: canvas.height / 2,
+            radius: 8,
+            dx: 4,
+            dy: -4
+        };
+
+        const blocks = [];
+        const blockRows = 6;
+        const blockCols = 10;
+        const blockWidth = 70;
+        const blockHeight = 20;
+        const blockPadding = 8;
+        const blockOffsetTop = 60;
+        const blockOffsetLeft = 35;
+
+        for (let r = 0; r < blockRows; r++) {
+            for (let c = 0; c < blockCols; c++) {
+                blocks.push({
+                    x: c * (blockWidth + blockPadding) + blockOffsetLeft,
+                    y: r * (blockHeight + blockPadding) + blockOffsetTop,
+                    width: blockWidth,
+                    height: blockHeight,
+                    visible: true,
+                    color: `hsl(${r * 60}, 70%, 50%)`
+                });
+            }
+        }
+
+        const keys = {
+            left: false,
+            right: false
+        };
+
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'ArrowLeft') keys.left = true;
+            if (e.key === 'ArrowRight') keys.right = true;
+        });
+
+        document.addEventListener('keyup', (e) => {
+            if (e.key === 'ArrowLeft') keys.left = false;
+            if (e.key === 'ArrowRight') keys.right = false;
+        });
+
+        function updatePaddle() {
+            if (keys.left && paddle.x > 0) {
+                paddle.x -= paddle.speed;
+            }
+            if (keys.right && paddle.x < canvas.width - paddle.width) {
+                paddle.x += paddle.speed;
+            }
+        }
+
+        function updateBall() {
+            ball.x += ball.dx;
+            ball.y += ball.dy;
+
+            if (ball.x + ball.radius > canvas.width || ball.x - ball.radius < 0) {
+                ball.dx = -ball.dx;
+            }
+
+            if (ball.y - ball.radius < 0) {
+                ball.dy = -ball.dy;
+            }
+
+            if (ball.y + ball.radius > canvas.height) {
+                gameRunning = false;
+                gameOverElement.style.display = 'block';
+                return;
+            }
+
+            if (ball.y + ball.radius > paddle.y &&
+                ball.x > paddle.x &&
+                ball.x < paddle.x + paddle.width &&
+                ball.dy > 0) {
+                ball.dy = -ball.dy;
+                playPaddleHitSound();
+                
+                const hitPos = (ball.x - paddle.x) / paddle.width;
+                ball.dx = (hitPos - 0.5) * 8;
+            }
+
+            blocks.forEach(block => {
+                if (block.visible &&
+                    ball.x + ball.radius > block.x &&
+                    ball.x - ball.radius < block.x + block.width &&
+                    ball.y + ball.radius > block.y &&
+                    ball.y - ball.radius < block.y + block.height) {
+                    
+                    block.visible = false;
+                    ball.dy = -ball.dy;
+                    score += 10;
+                    scoreElement.textContent = score;
+                    playBlockBreakSound();
+
+                    // 20%の確率でパワーアップアイテムを生成
+                    if (Math.random() < 0.2) {
+                        createPowerUp(block.x + block.width / 2, block.y + block.height);
+                    }
+
+                    if (blocks.every(block => !block.visible)) {
+                        alert('おめでとうございます！すべてのブロックを破壊しました！');
+                        restartGame();
+                    }
+                }
+            });
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            ctx.fillStyle = '#fff';
+            ctx.fillRect(paddle.x, paddle.y, paddle.width, paddle.height);
+
+            ctx.beginPath();
+            ctx.arc(ball.x, ball.y, ball.radius, 0, Math.PI * 2);
+            ctx.fillStyle = '#fff';
+            ctx.fill();
+            ctx.closePath();
+
+            blocks.forEach(block => {
+                if (block.visible) {
+                    ctx.fillStyle = block.color;
+                    ctx.fillRect(block.x, block.y, block.width, block.height);
+                    
+                    ctx.strokeStyle = '#fff';
+                    ctx.lineWidth = 1;
+                    ctx.strokeRect(block.x, block.y, block.width, block.height);
+                }
+            });
+            
+            // パワーアップアイテムの描画
+            powerUps.forEach(powerUp => {
+                if (!powerUp.collected) {
+                    ctx.fillStyle = powerUpTypes[powerUp.type].color;
+                    ctx.fillRect(powerUp.x, powerUp.y, powerUp.width, powerUp.height);
+                    
+                    // アイテムの種類を示すシンボル
+                    ctx.fillStyle = '#000';
+                    ctx.font = '12px Arial';
+                    ctx.textAlign = 'center';
+                    
+                    let symbol = '';
+                    switch (powerUp.type) {
+                        case 'BIGGER_BALL': symbol = 'B'; break;
+                        case 'LONGER_PADDLE': symbol = 'P'; break;
+                        case 'FASTER_BALL': symbol = 'S'; break;
+                    }
+                    
+                    ctx.fillText(symbol, powerUp.x + powerUp.width / 2, powerUp.y + powerUp.height / 2 + 4);
+                }
+            });
+            
+            // アクティブなパワーアップの表示
+            let statusY = 20;
+            ctx.fillStyle = '#fff';
+            ctx.font = '14px Arial';
+            ctx.textAlign = 'left';
+            
+            if (activePowerUps.biggerBall.active) {
+                ctx.fillText('ビッグボール', 10, statusY);
+                statusY += 20;
+            }
+            if (activePowerUps.longerPaddle.active) {
+                ctx.fillText('ロングパドル', 10, statusY);
+                statusY += 20;
+            }
+            if (activePowerUps.fasterBall.active) {
+                ctx.fillText('スピードアップ', 10, statusY);
+                statusY += 20;
+            }
+        }
+
+        function createPowerUp(x, y) {
+            const types = Object.keys(powerUpTypes);
+            const randomType = types[Math.floor(Math.random() * types.length)];
+            
+            powerUps.push({
+                x: x,
+                y: y,
+                width: 20,
+                height: 20,
+                type: randomType,
+                speed: 2,
+                collected: false
+            });
+        }
+        
+        function updatePowerUps() {
+            const currentTime = Date.now();
+            
+            // アクティブなパワーアップの時間チェック
+            Object.keys(activePowerUps).forEach(key => {
+                if (activePowerUps[key].active && currentTime > activePowerUps[key].endTime) {
+                    deactivatePowerUp(key);
+                }
+            });
+            
+            // パワーアップアイテムの移動と衝突判定
+            for (let i = powerUps.length - 1; i >= 0; i--) {
+                const powerUp = powerUps[i];
+                
+                if (!powerUp.collected) {
+                    powerUp.y += powerUp.speed;
+                    
+                    // パドルとの衝突判定
+                    if (powerUp.y + powerUp.height > paddle.y &&
+                        powerUp.x + powerUp.width > paddle.x &&
+                        powerUp.x < paddle.x + paddle.width &&
+                        powerUp.y < paddle.y + paddle.height) {
+                        
+                        activatePowerUp(powerUp.type);
+                        playPowerUpSound();
+                        powerUp.collected = true;
+                        powerUps.splice(i, 1);
+                    }
+                    // 画面外に出たら削除
+                    else if (powerUp.y > canvas.height) {
+                        powerUps.splice(i, 1);
+                    }
+                }
+            }
+        }
+        
+        function activatePowerUp(type) {
+            const powerUpData = powerUpTypes[type];
+            const currentTime = Date.now();
+            
+            switch (powerUpData.effect) {
+                case 'biggerBall':
+                    ball.radius = originalBallRadius * 1.5;
+                    activePowerUps.biggerBall = { active: true, endTime: currentTime + powerUpData.duration };
+                    break;
+                case 'longerPaddle':
+                    paddle.width = originalPaddleWidth * 1.5;
+                    activePowerUps.longerPaddle = { active: true, endTime: currentTime + powerUpData.duration };
+                    break;
+                case 'fasterBall':
+                    const speedMultiplier = 1.5;
+                    ball.dx = ball.dx > 0 ? originalBallSpeed.dx * speedMultiplier : -originalBallSpeed.dx * speedMultiplier;
+                    ball.dy = ball.dy > 0 ? originalBallSpeed.dy * speedMultiplier : -originalBallSpeed.dy * speedMultiplier;
+                    activePowerUps.fasterBall = { active: true, endTime: currentTime + powerUpData.duration };
+                    break;
+            }
+        }
+        
+        function deactivatePowerUp(effect) {
+            switch (effect) {
+                case 'biggerBall':
+                    ball.radius = originalBallRadius;
+                    activePowerUps.biggerBall.active = false;
+                    break;
+                case 'longerPaddle':
+                    paddle.width = originalPaddleWidth;
+                    activePowerUps.longerPaddle.active = false;
+                    break;
+                case 'fasterBall':
+                    ball.dx = ball.dx > 0 ? originalBallSpeed.dx : -originalBallSpeed.dx;
+                    ball.dy = ball.dy > 0 ? originalBallSpeed.dy : -originalBallSpeed.dy;
+                    activePowerUps.fasterBall.active = false;
+                    break;
+            }
+        }
+
+        function gameLoop() {
+            if (gameRunning) {
+                updatePaddle();
+                updateBall();
+                updatePowerUps();
+                draw();
+                requestAnimationFrame(gameLoop);
+            }
+        }
+
+        function restartGame() {
+            score = 0;
+            scoreElement.textContent = score;
+            gameRunning = true;
+            gameOverElement.style.display = 'none';
+
+            // パワーアップをリセット
+            powerUps.length = 0;
+            Object.keys(activePowerUps).forEach(key => {
+                activePowerUps[key] = { active: false, endTime: 0 };
+            });
+            
+            // 元の値に戻す
+            paddle.x = canvas.width / 2 - 50;
+            paddle.width = originalPaddleWidth;
+            
+            ball.x = canvas.width / 2;
+            ball.y = canvas.height / 2;
+            ball.radius = originalBallRadius;
+            ball.dx = originalBallSpeed.dx;
+            ball.dy = -originalBallSpeed.dy;
+
+            blocks.forEach(block => {
+                block.visible = true;
+            });
+
+            gameLoop();
+        }
+
+        gameLoop();
+    </script>
+</body>
+</html>
